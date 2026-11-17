@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>导入撤销与精确补偿控制台</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header>
+  <h1>导入撤销与精确补偿控制台</h1>
+  <span class="sub">事件账本 · 贡献关系图（FULL / PARTIAL）· 精确补偿 vs 重建 · 外发失效通知</span>
+  <span style="flex:1"></span>
+  <button class="ghost" id="btn-refresh">刷新</button>
+  <button id="btn-demo">一键运行完整演示</button>
+</header>
+
+<div class="layout">
+  <!-- ================================================== left column -->
+  <div class="col">
+    <div class="card">
+      <h2>总览与一致性校验</h2>
+      <div class="stat-grid" id="stats"></div>
+      <div id="verify-box" style="margin-top:12px"></div>
+      <div class="legend">
+        <span><i class="dot" style="background:var(--green)"></i>active 内部正确</span>
+        <span><i class="dot" style="background:var(--red)"></i>invalidated 已外发只能通知失效</span>
+        <span><i class="dot" style="background:var(--muted)"></i>removed 精确移除</span>
+        <span><i class="dot" style="background:var(--purple)"></i>PARTIAL 多批次合并</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>导入登记（原始文件永久保留为证据）</h2>
+      <div class="form-row">
+        <div>
+          <label>上传导入文件（JSON 数组）或选择内置样例</label>
+          <input type="file" id="file-input" accept=".json">
+        </div>
+        <div style="max-width:200px">
+          <label>内置样例</label>
+          <select id="sample-pick">
+            <option value="">— 选择样例批次 —</option>
+            <option value="batch_1.json">batch_1（12 行）</option>
+            <option value="batch_2.json">batch_2（10 行，账户重叠）</option>
+            <option value="batch_3.json">batch_3（6 行，仅 ACC-300）</option>
+          </select>
+        </div>
+        <button id="btn-register">登记导入</button>
+      </div>
+      <div class="scroll" style="margin-top:12px">
+        <table id="imports-table">
+          <thead><tr>
+            <th>导入</th><th>状态</th><th class="num">行数</th><th>原始文件 SHA-256</th><th>操作</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>加工产物与贡献关系</h2>
+      <div class="tabs" id="product-tabs">
+        <button data-t="all" class="active">全部</button>
+        <button data-t="aggregate">账户汇总 aggregate</button>
+        <button data-t="detail">明细 detail</button>
+        <button data-t="statement">对账单 statement</button>
+      </div>
+      <div class="scroll">
+        <table id="products-table">
+          <thead><tr>
+            <th>产物</th><th>类型</th><th>账户</th><th>状态</th>
+            <th class="num">金额(分)</th><th class="num">数量</th><th>外发</th><th>贡献</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================================================== right column -->
+  <div class="col">
+    <div class="card">
+      <h2>订阅方与消息投递（离线补发 / 幂等去重）</h2>
+      <div class="form-row">
+        <div><label>订阅方名称</label><input id="c-name" placeholder="例如：风控订阅方"></div>
+        <div style="max-width:170px"><label>账户过滤</label><input id="c-filter" value="*"></div>
+        <div style="max-width:150px"><label>初始状态</label>
+          <select id="c-status"><option value="online">online</option><option value="offline">offline</option></select>
+        </div>
+        <button id="btn-add-consumer">新增订阅方</button>
+      </div>
+      <div id="consumers" style="margin-top:12px"></div>
+    </div>
+
+    <div class="card">
+      <h2>消息总线（含失效 / 更正通知）</h2>
+      <div class="scroll">
+        <table id="messages-table">
+          <thead><tr>
+            <th>类型</th><th>账户</th><th class="num">扇出</th>
+            <th class="num">已投递</th><th class="num">挂起</th><th>幂等键</th><th>操作</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>撤销记录与操作审计</h2>
+      <div class="tabs" id="audit-tabs">
+        <button data-t="revoc" class="active">撤销记录</button>
+        <button data-t="oplog">操作日志 oplog</button>
+        <button data-t="events">事件账本（最近）</button>
+      </div>
+      <div class="scroll" id="audit-body"></div>
+    </div>
+  </div>
+</div>
+
+<!-- revocation dialog -->
+<dialog id="revoke-dlg">
+  <div class="dlg-head"><strong id="revoke-title">撤销导入</strong>
+    <button class="ghost" id="revoke-close">✕</button></div>
+  <div class="dlg-body">
+    <div id="revoke-preview"></div>
+    <label>撤销策略</label>
+    <select id="revoke-strategy">
+      <option value="compensate">精确补偿 compensate — 反向 ADJUSTMENT，保证内部余额正确，成本低</option>
+      <option value="rebuild">重建 rebuild — 从剩余原始记录全量重算，可自愈历史漂移</option>
+    </select>
+    <label>撤销原因</label>
+    <input id="revoke-reason" value="用户请求撤销该批次">
+    <div class="guarantee warn" id="strategy-note"></div>
+  </div>
+  <div class="dlg-foot">
+    <button class="ghost" id="revoke-cancel">取消</button>
+    <button class="danger" id="revoke-confirm">确认撤销</button>
+  </div>
+</dialog>
+
+<!-- generic detail dialog -->
+<dialog id="detail-dlg">
+  <div class="dlg-head"><strong id="detail-title">详情</strong>
+    <button class="ghost" id="detail-close">✕</button></div>
+  <div class="dlg-body"><pre class="json" id="detail-json"></pre></div>
+</dialog>
+
+<div class="toast-wrap" id="toasts"></div>
+<script src="/app.js"></script>
+</body>
+</html>
